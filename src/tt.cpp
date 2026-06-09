@@ -20,7 +20,7 @@ const TranspositionEntry* TranspositionTable::probe(uint64_t key) const
     return nullptr;
 }
 
-void TranspositionTable::store(uint64_t key, int depth, int value,
+void TranspositionTable::store(uint64_t key, int depth, float value,
                                Move best_move, BoundType bound)
 {
     TranspositionEntry& entry = entries_[index(key)];

@@ -4,10 +4,10 @@
 #include <stdexcept>
 #include <utility>
 
-int ScoreDiffEvaluator::evaluate(const State& state, int player) const
+float ScoreDiffEvaluator::evaluate(const State& state, int player) const
 {
     auto scores = state.scores();
-    int value = scores.first - scores.second;
+    float value = static_cast<float>(scores.first - scores.second);
     if (player == 1) {
         value = -value;
     }
@@ -138,22 +138,22 @@ void NegamaxAgent::order_moves(const State& state, std::vector<Move>& moves,
     }
 }
 
-std::pair<int, Move> NegamaxAgent::negamax(
-    State& state, int depth, int alpha, int beta, int player,
+std::pair<float, Move> NegamaxAgent::negamax(
+    State& state, int depth, float alpha, float beta, int player,
     std::chrono::steady_clock::time_point deadline, bool& timed_out, int ply,
     bool is_root)
 {
     if (timed_out || std::chrono::steady_clock::now() >= deadline) {
         timed_out = true;
-        return std::make_pair(0, PASS_MOVE);
+        return std::make_pair(0.0f, PASS_MOVE);
     }
 
     if ((depth == 0) || state.is_terminal()) {
         return std::make_pair(evaluator_->evaluate(state, player), PASS_MOVE);
     }
 
-    const int original_alpha = alpha;
-    const int original_beta = beta;
+    const float original_alpha = alpha;
+    const float original_beta = beta;
     const uint64_t key = state.hash();
     const TranspositionEntry* tt_entry = tt_.probe(key);
     if (tt_entry != nullptr && tt_entry->depth >= depth) {
@@ -176,17 +176,17 @@ std::pair<int, Move> NegamaxAgent::negamax(
                                     : std::nullopt,
                 depth, ply, is_root);
 
-    int value = -INF;
+    float value = -INF;
     Move best_move = PASS_MOVE;
     for (auto move : moves) {
         state.apply(move);
-        int child_value = -negamax(state, depth - 1, -beta, -alpha,
-                                   1 - player, deadline, timed_out, ply + 1,
-                                   false)
-                               .first;
+        float child_value = -negamax(state, depth - 1, -beta, -alpha,
+                                     1 - player, deadline, timed_out, ply + 1,
+                                     false)
+                                 .first;
         state.undo();
         if (timed_out) {
-            return std::make_pair(0, PASS_MOVE);
+            return std::make_pair(0.0f, PASS_MOVE);
         }
         if (child_value > value) {
             value = child_value;
@@ -208,15 +208,15 @@ std::pair<int, Move> NegamaxAgent::negamax(
     return std::make_pair(value, best_move);
 }
 
-std::pair<int, Move> NegamaxAgent::iterative_deepening(State& state,
-                                                       int max_depth,
-                                                       int time_budget_ms)
+std::pair<float, Move> NegamaxAgent::iterative_deepening(State& state,
+                                                         int max_depth,
+                                                         int time_budget_ms)
 {
     const int safe_budget_ms = std::max(1, time_budget_ms);
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(safe_budget_ms);
 
-    std::pair<int, Move> best_completed = std::make_pair(-INF, PASS_MOVE);
+    std::pair<float, Move> best_completed = std::make_pair(-INF, PASS_MOVE);
     for (int depth = 1; depth <= max_depth; ++depth) {
         bool timed_out = false;
         auto result = negamax(state, depth, -INF, INF, state.current_player(),

@@ -17,7 +17,7 @@ enum class BoundType {
 struct TranspositionEntry {
     uint64_t key;
     int depth;
-    int value;
+    float value;
     Move best_move;
     BoundType bound;
     bool occupied;
@@ -27,7 +27,7 @@ class TranspositionTable {
 public:
     explicit TranspositionTable(size_t capacity = TT_CAPACITY);
     const TranspositionEntry* probe(uint64_t key) const;
-    void store(uint64_t key, int depth, int value, Move best_move,
+    void store(uint64_t key, int depth, float value, Move best_move,
                BoundType bound);
     size_t size() const;
     size_t capacity() const;

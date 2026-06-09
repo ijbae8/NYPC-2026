@@ -12,7 +12,7 @@
 #define R 10
 #define C 17
 
-constexpr int INF = 1000000;
+constexpr float INF = 1000000.0f;
 
 struct SearchConfig {
     int rows = R;
@@ -24,7 +24,7 @@ struct SearchConfig {
 class Evaluator {
 public:
     virtual ~Evaluator() = default;
-    virtual int evaluate(const State& state, int player) const = 0;
+    virtual float evaluate(const State& state, int player) const = 0;
 };
 
 class MovePrioritizer {
@@ -44,7 +44,7 @@ public:
 
 class ScoreDiffEvaluator final : public Evaluator {
 public:
-    int evaluate(const State& state, int player) const override;
+    float evaluate(const State& state, int player) const override;
 };
 
 class AreaMovePrioritizer final : public MovePrioritizer {
@@ -102,12 +102,12 @@ private:
     void order_moves(const State& state, std::vector<Move>& moves,
                      std::optional<Move> tt_best_move, int depth, int ply,
                      bool is_root) const;
-    std::pair<int, Move> negamax(
-        State& state, int depth, int alpha, int beta, int player,
+    std::pair<float, Move> negamax(
+        State& state, int depth, float alpha, float beta, int player,
         std::chrono::steady_clock::time_point deadline, bool& timed_out,
         int ply = 0, bool is_root = false);
-    std::pair<int, Move> iterative_deepening(State& state, int max_depth,
-                                             int time_budget_ms);
+    std::pair<float, Move> iterative_deepening(State& state, int max_depth,
+                                               int time_budget_ms);
 
     SearchConfig config_;
     std::unique_ptr<Evaluator> evaluator_;
