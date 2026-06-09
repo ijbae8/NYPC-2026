@@ -25,17 +25,25 @@ private:
 float WeightedDiffEvaluator::evaluate(const State& state, int player) const
 {
     float value = 0.0f;
-    for (int r = 0; r < state.rows(); ++r) {
-        for (int c = 0; c < state.cols(); ++c) {
-            const int owner = state.cell_owner(r, c);
-            if (owner == -1) {
-                continue;
-            }
+    if(state.is_terminal() || state.undo_depth() > 15)
+    {
+        auto scores = state.scores();
+        value = scores.first - scores.second;
+    }
+    else {
+        for (int r = 0; r < state.rows(); ++r) {
+            for (int c = 0; c < state.cols(); ++c) {
+                const int owner = state.cell_owner(r, c);
+                if (owner == -1) {
+                    continue;
+                }
 
-            const float weight = weight_map_[r * C + c];
-            value += owner == 0 ? weight : -weight;
+                const float weight = weight_map_[r * C + c];
+                value += owner == 0 ? weight : -weight;
+            }
         }
     }
+
 
     if (player == 1) {
         value = -value;

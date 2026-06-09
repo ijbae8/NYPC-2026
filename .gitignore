@@ -6,3 +6,7 @@ log.txt
 setting.ini
 
 /src/genetic_weight_finding/results
+/src/league/__pycache__
+/src/league/logs
+/src/league/input.txt
+/src/league/match_history.jsonl

@@ -1,0 +1,4 @@
+plain_negamax=.\bins\negamax_noweights.exe
+weighted_negamax=.\bins\negamax_weights.exe .\resources\weight_map1.txt
+135=.\bins\135.exe
+130=.\bins\130.exe
