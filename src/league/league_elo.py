@@ -1,15 +1,14 @@
-import argparse
 import contextlib
 import importlib
 import io
 import json
-import math
 import os
 import random
 import re
 import shutil
 import sys
 from datetime import datetime
+from itertools import combinations
 from pathlib import Path
 
 
@@ -18,15 +17,15 @@ COMPETITORS_FILE = BASE_DIR / "competants.txt"
 SETTING_FILE = BASE_DIR / "setting.ini"
 INPUT_FILE = BASE_DIR / "input.txt"
 RUNNER_MODULE = "testing_tool"
-ELO_FILE = BASE_DIR / "elo_ratings.json"
 HISTORY_FILE = BASE_DIR / "match_history.jsonl"
 LOG_DIR = BASE_DIR / "logs"
+TEMP_LOG_FILE = BASE_DIR / "log.txt"
 
-START_RATING = 1500.0
-K_FACTOR = 32.0
 DEFAULT_MAP_ROWS = 10
 DEFAULT_MAP_COLS = 17
 MAX_ATTEMPTS = 3
+LEAGUE_MATCH_ITERATIONS = 5
+ENABLE_LOGGING = False
 
 
 def runner_module():
@@ -86,40 +85,6 @@ def load_competitors():
     return competitors
 
 
-def load_ratings(competitors):
-    if ELO_FILE.exists():
-        data = json.loads(ELO_FILE.read_text())
-    else:
-        data = {}
-
-    ratings = {}
-    for competitor_id in competitors:
-        ratings[competitor_id] = float(data.get(competitor_id, START_RATING))
-    return ratings
-
-
-def save_ratings(ratings):
-    payload = {
-        competitor_id: round(rating, 2)
-        for competitor_id, rating in sorted(ratings.items(), key=lambda item: (-item[1], item[0]))
-    }
-    ELO_FILE.write_text(json.dumps(payload, indent=2) + "\n")
-
-
-def expected_score(rating_a, rating_b):
-    return 1.0 / (1.0 + math.pow(10.0, (rating_b - rating_a) / 400.0))
-
-
-def update_elo(rating_a, rating_b, actual_a):
-    expected_a = expected_score(rating_a, rating_b)
-    expected_b = 1.0 - expected_a
-    actual_b = 1.0 - actual_a
-    return (
-        rating_a + K_FACTOR * (actual_a - expected_a),
-        rating_b + K_FACTOR * (actual_b - expected_b),
-    )
-
-
 def generate_map():
     rows_count, cols_count = map_size()
     rows = []
@@ -167,6 +132,8 @@ def parse_scores(log_text):
 
 
 def make_attempt_log_path(match_id, leg_name, attempt):
+    if not ENABLE_LOGGING:
+        return TEMP_LOG_FILE
     LOG_DIR.mkdir(exist_ok=True)
     return LOG_DIR / f"{match_id}_{leg_name}_attempt{attempt}.txt"
 
@@ -176,6 +143,11 @@ def setting_path(path):
 
 
 def archive_attempt_log(log_path, ok):
+    if not ENABLE_LOGGING:
+        if log_path.exists():
+            log_path.unlink()
+        return None
+
     status = "ok" if ok else "failed"
     destination = log_path.with_name(f"{log_path.stem}_{status}{log_path.suffix}")
     if log_path.exists():
@@ -252,7 +224,7 @@ def run_leg(first_id, first_info, second_id, second_info, leg_name, match_id):
     )
 
 
-def play_two_leg_match(competitors, ratings, first_id, second_id):
+def play_two_leg_match(competitors, first_id, second_id, iteration):
     if first_id == second_id:
         raise ValueError("A competitor cannot play against itself.")
     if first_id not in competitors:
@@ -261,10 +233,7 @@ def play_two_leg_match(competitors, ratings, first_id, second_id):
         raise ValueError(f"Unknown competitor ID: {second_id}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    match_id = f"{timestamp}_{first_id}_vs_{second_id}"
-
-    before_a = ratings[first_id]
-    before_b = ratings[second_id]
+    match_id = f"{timestamp}_{first_id}_vs_{second_id}_iter{iteration}"
 
     leg1 = run_leg(first_id, competitors[first_id], second_id, competitors[second_id], "leg1", match_id)
     leg2 = run_leg(second_id, competitors[second_id], first_id, competitors[first_id], "leg2", match_id)
@@ -274,112 +243,255 @@ def play_two_leg_match(competitors, ratings, first_id, second_id):
     wins_b = sum(1 for leg in legs if leg["winner"] == second_id)
 
     if wins_a == 2:
-        result_a = 1.0
         result = f"{first_id} wins"
     elif wins_b == 2:
-        result_a = 0.0
         result = f"{second_id} wins"
     else:
-        result_a = 0.5
         result = "draw"
-
-    after_a, after_b = update_elo(before_a, before_b, result_a)
-    ratings[first_id] = after_a
-    ratings[second_id] = after_b
-    save_ratings(ratings)
 
     history = {
         "match_id": match_id,
         "time": datetime.now().isoformat(timespec="seconds"),
+        "iteration": iteration,
         "competitors": [first_id, second_id],
         "result": result,
         "wins": {first_id: wins_a, second_id: wins_b},
-        "rating_before": {first_id: round(before_a, 2), second_id: round(before_b, 2)},
-        "rating_after": {first_id: round(after_a, 2), second_id: round(after_b, 2)},
         "legs": legs,
     }
-    with HISTORY_FILE.open("a") as file:
-        file.write(json.dumps(history) + "\n")
+    if ENABLE_LOGGING:
+        with HISTORY_FILE.open("a") as file:
+            file.write(json.dumps(history) + "\n")
 
     return history
 
 
-def choose_auto_pair(ratings):
-    TEMPERATURE = 100
-
-    ranked = sorted(ratings.items(), key=lambda item: item[1])
-    pairs = list(zip(ranked, ranked[1:]))
-
-    weights = [
-        math.exp(-abs(pair[0][1] - pair[1][1]) / TEMPERATURE)
-        for pair in pairs
-    ]
-
-    chosen_pair = random.choices(pairs, weights=weights, k=1)[0]
-
-    (a_id, a_rating), (b_id, b_rating) = chosen_pair
-    return (a_id, b_id)
-
-def print_standings(ratings):
-    for rank, (competitor_id, rating) in enumerate(
-        sorted(ratings.items(), key=lambda item: (-item[1], item[0])),
-        start=1,
-    ):
-        print(f"{rank:2}. {competitor_id:30} {rating:7.2f}")
+def iter_all_pairs(competitors):
+    return list(combinations(sorted(competitors), 2))
 
 
-def run_match_batch(args, competitors, ratings):
-    if args.players:
-        if len(args.players) != 2:
-            raise ValueError("Manual matches require exactly two IDs.")
-        pair = tuple(args.players)
+def create_empty_record():
+    return {
+        "matches": 0,
+        "match_wins": 0,
+        "draws": 0,
+        "match_losses": 0,
+        "leg_wins": 0,
+        "leg_losses": 0,
+        "score_for": 0,
+        "score_against": 0,
+    }
+
+
+def update_summary_records(records, entry):
+    competitor_ids = entry.get("competitors", [])
+    wins = entry.get("wins", {})
+    legs = entry.get("legs", [])
+    if len(competitor_ids) != 2:
+        return
+
+    first_id, second_id = competitor_ids
+    if first_id not in records or second_id not in records:
+        return
+
+    first_wins = int(wins.get(first_id, 0))
+    second_wins = int(wins.get(second_id, 0))
+
+    first_record = records[first_id]
+    second_record = records[second_id]
+
+    first_record["matches"] += 1
+    second_record["matches"] += 1
+    first_record["leg_wins"] += first_wins
+    first_record["leg_losses"] += second_wins
+    second_record["leg_wins"] += second_wins
+    second_record["leg_losses"] += first_wins
+
+    for leg in legs:
+        score_first = int(leg.get("score_first", 0))
+        score_second = int(leg.get("score_second", 0))
+        leg_first = leg.get("first")
+        leg_second = leg.get("second")
+
+        if leg_first in records:
+            records[leg_first]["score_for"] += score_first
+            records[leg_first]["score_against"] += score_second
+        if leg_second in records:
+            records[leg_second]["score_for"] += score_second
+            records[leg_second]["score_against"] += score_first
+
+    if first_wins > second_wins:
+        first_record["match_wins"] += 1
+        second_record["match_losses"] += 1
+    elif second_wins > first_wins:
+        second_record["match_wins"] += 1
+        first_record["match_losses"] += 1
     else:
-        pair = choose_auto_pair(ratings)
+        first_record["draws"] += 1
+        second_record["draws"] += 1
 
-    for match_number in range(1, args.count + 1):
-        first_id, second_id = pair
-        if not args.players and match_number > 1:
-            first_id, second_id = choose_auto_pair(ratings)
 
-        history = play_two_leg_match(competitors, ratings, first_id, second_id)
+def compute_competitor_summary(competitors, results):
+    records = {
+        competitor_id: create_empty_record()
+        for competitor_id in competitors
+    }
+
+    for entry in results:
+        update_summary_records(records, entry)
+    return records
+
+
+def build_pair_summary(results):
+    pair_summary = {}
+    for entry in results:
+        first_id, second_id = entry["competitors"]
+        pair_key = (first_id, second_id)
+        if pair_key not in pair_summary:
+            pair_summary[pair_key] = {
+                "matches": 0,
+                "draws": 0,
+                "match_wins": {first_id: 0, second_id: 0},
+                "leg_wins": {first_id: 0, second_id: 0},
+                "score_for": {first_id: 0, second_id: 0},
+                "score_against": {first_id: 0, second_id: 0},
+            }
+
+        summary = pair_summary[pair_key]
+        summary["matches"] += 1
+        first_wins = int(entry["wins"].get(first_id, 0))
+        second_wins = int(entry["wins"].get(second_id, 0))
+        summary["leg_wins"][first_id] += first_wins
+        summary["leg_wins"][second_id] += second_wins
+
+        if first_wins > second_wins:
+            summary["match_wins"][first_id] += 1
+        elif second_wins > first_wins:
+            summary["match_wins"][second_id] += 1
+        else:
+            summary["draws"] += 1
+
+        for leg in entry["legs"]:
+            score_first = int(leg["score_first"])
+            score_second = int(leg["score_second"])
+            leg_first = leg["first"]
+            leg_second = leg["second"]
+            summary["score_for"][leg_first] += score_first
+            summary["score_against"][leg_first] += score_second
+            summary["score_for"][leg_second] += score_second
+            summary["score_against"][leg_second] += score_first
+
+    return pair_summary
+
+
+def print_match_result(history):
+    first_id, second_id = history["competitors"]
+    print(
+        f"[MATCH] {history['match_id']} -> {history['result']} "
+        f"(iteration {history['iteration']}, "
+        f"leg wins {first_id} {history['wins'][first_id]} - {history['wins'][second_id]} {second_id})"
+    )
+    for leg in history["legs"]:
+        winner = leg["winner"] or "draw"
+        log_part = f" | log: {leg['log']}" if leg["log"] else ""
         print(
-            f"{history['match_id']}: {history['result']} "
-            f"({history['rating_before'][first_id]:.2f}->{history['rating_after'][first_id]:.2f}, "
-            f"{history['rating_before'][second_id]:.2f}->{history['rating_after'][second_id]:.2f})"
+            f"        {leg['leg']}: {leg['first']} {leg['score_first']} - "
+            f"{leg['score_second']} {leg['second']} | winner: {winner} | "
+            f"attempt: {leg['attempt']}{log_part}"
         )
 
 
-def build_parser():
-    parser = argparse.ArgumentParser(description="Persistent two-leg ELO league runner.")
-    subparsers = parser.add_subparsers(dest="command")
+def print_pair_summary(pair_summary):
+    print("\n=== Pair Summary ===")
+    for (first_id, second_id), summary in sorted(pair_summary.items()):
+        first_score_diff = summary["score_for"][first_id] - summary["score_against"][first_id]
+        second_score_diff = summary["score_for"][second_id] - summary["score_against"][second_id]
+        print(
+            f"{first_id} vs {second_id} | matches: {summary['matches']} | draws: {summary['draws']} | "
+            f"match wins: {first_id} {summary['match_wins'][first_id]} - "
+            f"{summary['match_wins'][second_id]} {second_id}"
+        )
+        print(
+            f"    leg wins: {first_id} {summary['leg_wins'][first_id]} - "
+            f"{summary['leg_wins'][second_id]} {second_id}"
+        )
+        print(
+            f"    score totals: {first_id} {summary['score_for'][first_id]} "
+            f"(against {summary['score_against'][first_id]}, diff {first_score_diff:+}) | "
+            f"{second_id} {summary['score_for'][second_id]} "
+            f"(against {summary['score_against'][second_id]}, diff {second_score_diff:+})"
+        )
 
-    subparsers.add_parser("standings", help="Show current ratings.")
-    subparsers.add_parser("init", help="Create or refresh the ELO file for current competitors.")
 
-    match_parser = subparsers.add_parser("match", help="Run one or more two-leg matches.")
-    match_parser.add_argument("players", nargs="*", help="Optional manual competitor IDs: ID1 ID2")
-    match_parser.add_argument("-n", "--count", type=int, default=1, help="Number of two-leg matches to run.")
+def print_competitor_summary(competitors, results):
+    summary = compute_competitor_summary(competitors, results)
+    ranked = sorted(
+        summary.items(),
+        key=lambda item: (
+            -item[1]["match_wins"],
+            -item[1]["draws"],
+            -(item[1]["leg_wins"] - item[1]["leg_losses"]),
+            -(item[1]["score_for"] - item[1]["score_against"]),
+            -item[1]["leg_wins"],
+            item[0],
+        ),
+    )
 
-    return parser
+    print("\n=== Final Competitor Summary ===")
+    print(
+        f"{'RK':>2} {'ID':30} {'MP':>3} {'W':>3} {'D':>3} {'L':>3} "
+        f"{'LW':>3} {'LL':>3} {'LD':>4} {'SF':>5} {'SA':>5} {'SD':>5}"
+    )
+    for rank, (competitor_id, record) in enumerate(ranked, start=1):
+        leg_diff = record["leg_wins"] - record["leg_losses"]
+        score_diff = record["score_for"] - record["score_against"]
+        print(
+            f"{rank:2} {competitor_id:30} {record['matches']:3} "
+            f"{record['match_wins']:3} {record['draws']:3} {record['match_losses']:3} "
+            f"{record['leg_wins']:3} {record['leg_losses']:3} {leg_diff:4} "
+            f"{record['score_for']:5} {record['score_against']:5} {score_diff:5}"
+        )
+
+
+def run_full_evaluation(competitors):
+    pairs = iter_all_pairs(competitors)
+    total_matches = len(pairs) * LEAGUE_MATCH_ITERATIONS
+    results = []
+
+    print("=== League Evaluation ===")
+    print(f"Competitors: {len(competitors)}")
+    print(f"Pairs: {len(pairs)}")
+    print(f"Two-leg matches per pair: {LEAGUE_MATCH_ITERATIONS}")
+    print(f"Total two-leg matches to run: {total_matches}")
+    print(f"Logging enabled: {ENABLE_LOGGING}")
+
+    if ENABLE_LOGGING:
+        HISTORY_FILE.write_text("")
+    elif TEMP_LOG_FILE.exists():
+        TEMP_LOG_FILE.unlink()
+
+    completed_matches = 0
+    for pair_index, (first_id, second_id) in enumerate(pairs, start=1):
+        print(f"\n--- Pair {pair_index}/{len(pairs)}: {first_id} vs {second_id} ---")
+        for iteration in range(1, LEAGUE_MATCH_ITERATIONS + 1):
+            history = play_two_leg_match(competitors, first_id, second_id, iteration)
+            results.append(history)
+            completed_matches += 1
+            print(f"Progress: {completed_matches}/{total_matches} matches completed")
+            print_match_result(history)
+
+    return results
 
 
 def main():
-    args = build_parser().parse_args()
-    competitors = load_competitors()
-    ratings = load_ratings(competitors)
+    if LEAGUE_MATCH_ITERATIONS < 1:
+        raise ValueError("LEAGUE_MATCH_ITERATIONS must be at least 1.")
 
-    if args.command == "standings":
-        save_ratings(ratings)
-        print_standings(ratings)
-    elif args.command == "init":
-        save_ratings(ratings)
-        print(f"Initialized {ELO_FILE.name} with {len(ratings)} competitors.")
-    elif args.command == "match":
-        if args.count < 1:
-            raise ValueError("--count must be at least 1.")
-        run_match_batch(args, competitors, ratings)
-    else:
-        print_standings(ratings)
+    competitors = load_competitors()
+    results = run_full_evaluation(competitors)
+    print_pair_summary(build_pair_summary(results))
+    print_competitor_summary(competitors, results)
+    if ENABLE_LOGGING:
+        print(f"\nDetailed match history written to {HISTORY_FILE.name}")
 
 
 if __name__ == "__main__":

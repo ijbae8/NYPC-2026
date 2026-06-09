@@ -45,9 +45,10 @@ int AdaptiveTimeBudgeter::compute_ms(int my_time_ms, int current_ply,
                                      int legal_move_count) const
 {
     const int usable_time_ms = std::max(1, my_time_ms - clock_reserve_ms_);
-    const int remaining_plies =
-        std::max(min_remaining_plies_, expected_game_plies_ - current_ply);
-    int budget = usable_time_ms / remaining_plies;
+    const int remaining_plies = std::max(0, expected_game_plies_ - current_ply);
+    const int remaining_my_turns = std::max(3, (remaining_plies + 1) / 2);
+
+    int budget = usable_time_ms / remaining_my_turns;
 
     if (legal_move_count > heavy_branch_threshold_) {
         budget = budget * 3 / 2;
