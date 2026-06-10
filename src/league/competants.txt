@@ -1,4 +1,2 @@
 pnm=.\bins\negamax_noweights.exe
-pnm2=.\bins\negamax_noweights2.exe
-wnm-0.1-3=.\bins\negamax_weights.exe .\resources\weight_map1.txt
-wnm-0.05-3=.\bins\negamax_weights.exe .\resources\weight_map2.txt
+pnm2=.\bins\new.exe

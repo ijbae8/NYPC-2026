@@ -66,6 +66,7 @@ State::State(int rows, int cols, const std::vector<std::vector<int>>& init_grid)
       current_player_(0),
       consecutive_passes_(0),
       zobrist_key_(0),
+      legal_moves_(),
       undo_stack_()
 {
     if (rows_ <= 0 || cols_ <= 0) {
@@ -89,6 +90,8 @@ State::State(int rows, int cols, const std::vector<std::vector<int>>& init_grid)
     }
     owners_.assign(grid_.size(), static_cast<int8_t>(-1));
     zobrist_key_ = compute_zobrist_key();
+    legal_moves_ = generate_legal_moves_intersecting(0, 0, rows_ - 1, cols_ - 1);
+    legal_moves_.push_back(PASS_MOVE);
 }
 
 State State::clone() const
@@ -109,6 +112,7 @@ void State::apply(Move m)
     record.prev_consecutive_passes = consecutive_passes_;
     record.prev_player = current_player_;
     record.prev_hash = zobrist_key_;
+    record.prev_legal_moves = legal_moves_;
 
     if (m.is_pass()) {
         zobrist_key_ ^= zobrist_player(current_player_);
@@ -147,6 +151,20 @@ void State::apply(Move m)
     current_player_ = 1 - current_player_;
     zobrist_key_ ^= zobrist_player(current_player_);
     zobrist_key_ ^= zobrist_passes(consecutive_passes_);
+
+    std::vector<Move> next_moves;
+    next_moves.reserve(legal_moves_.size());
+    for (const Move& old_move : legal_moves_) {
+        if (old_move.is_pass() || !intersects(old_move, m)) {
+            next_moves.push_back(old_move);
+        }
+    }
+
+    std::vector<Move> regenerated =
+        generate_legal_moves_intersecting(m.r1, m.c1, m.r2, m.c2);
+    next_moves.insert(next_moves.end(), regenerated.begin(), regenerated.end());
+    legal_moves_ = std::move(next_moves);
+
     undo_stack_.push_back(std::move(record));
 }
 
@@ -166,6 +184,7 @@ void State::undo()
     consecutive_passes_ = record.prev_consecutive_passes;
     current_player_ = record.prev_player;
     zobrist_key_ = record.prev_hash;
+    legal_moves_ = std::move(record.prev_legal_moves);
 }
 
 int State::undo_depth() const
@@ -175,15 +194,26 @@ int State::undo_depth() const
 
 std::vector<Move> State::legal_moves() const
 {
+    return legal_moves_;
+}
+
+std::vector<Move> State::generate_legal_moves_intersecting(int affected_r1,
+                                                           int affected_c1,
+                                                           int affected_r2,
+                                                           int affected_c2) const
+{
     std::vector<Move> moves;
     std::vector<int> col_sum(cols_, 0);
 
-    for (int r1 = 0; r1 < rows_; ++r1) {
+    for (int r1 = 0; r1 < rows_ && r1 <= affected_r2; ++r1) {
         std::fill(col_sum.begin(), col_sum.end(), 0);
 
         for (int r2 = r1; r2 < rows_; ++r2) {
             for (int c = 0; c < cols_; ++c) {
                 col_sum[c] += grid_[idx(r2, c)];
+            }
+            if (r2 < affected_r1) {
+                continue;
             }
 
             int c1 = 0;
@@ -198,7 +228,8 @@ std::vector<Move> State::legal_moves() const
 
                 if (sum == 10) {
                     for (int left = c1; left <= c2; ++left) {
-                        if (border_ok(r1, left, r2, c2)) {
+                        if (left <= affected_c2 && c2 >= affected_c1 &&
+                            border_ok(r1, left, r2, c2)) {
                             moves.push_back({r1, left, r2, c2});
                         }
                         if (col_sum[left] != 0) {
@@ -206,11 +237,14 @@ std::vector<Move> State::legal_moves() const
                         }
                     }
                 }
+
+                if (c1 > affected_c2) {
+                    break;
+                }
             }
         }
     }
 
-    moves.push_back(PASS_MOVE);
     return moves;
 }
 
@@ -365,6 +399,15 @@ bool State::border_ok(int r1, int c1, int r2, int c2) const
     }
 
     return top && bottom && left && right;
+}
+
+bool State::intersects(const Move& lhs, const Move& rhs) const
+{
+    if (lhs.is_pass() || rhs.is_pass()) {
+        return false;
+    }
+    return lhs.r1 <= rhs.r2 && lhs.r2 >= rhs.r1 && lhs.c1 <= rhs.c2 &&
+           lhs.c2 >= rhs.c1;
 }
 
 int State::idx(int r, int c) const

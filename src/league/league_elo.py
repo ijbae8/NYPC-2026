@@ -11,7 +11,6 @@ from datetime import datetime
 from itertools import combinations
 from pathlib import Path
 
-
 BASE_DIR = Path(__file__).resolve().parent
 COMPETITORS_FILE = BASE_DIR / "competants.txt"
 SETTING_FILE = BASE_DIR / "setting.ini"
@@ -24,7 +23,7 @@ TEMP_LOG_FILE = BASE_DIR / "log.txt"
 DEFAULT_MAP_ROWS = 10
 DEFAULT_MAP_COLS = 17
 MAX_ATTEMPTS = 3
-LEAGUE_MATCH_ITERATIONS = 5
+LEAGUE_MATCH_ITERATIONS = 100
 ENABLE_LOGGING = False
 
 

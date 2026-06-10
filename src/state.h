@@ -57,6 +57,7 @@ private:
         };
 
         std::vector<CellDelta> deltas;
+        std::vector<Move> prev_legal_moves;
     };
 
     int rows_;
@@ -66,6 +67,7 @@ private:
     int current_player_;
     int consecutive_passes_;
     uint64_t zobrist_key_;
+    std::vector<Move> legal_moves_;
 
     std::vector<UndoRecord> undo_stack_;
 
@@ -76,6 +78,9 @@ private:
     static uint64_t zobrist_dimensions(int rows, int cols);
 
     bool border_ok(int r1, int c1, int r2, int c2) const;
+    bool intersects(const Move& lhs, const Move& rhs) const;
+    std::vector<Move> generate_legal_moves_intersecting(int r1, int c1, int r2,
+                                                        int c2) const;
     int idx(int r, int c) const;
     uint64_t compute_zobrist_key() const;
 };
