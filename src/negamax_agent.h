@@ -81,6 +81,31 @@ private:
     int light_branch_threshold_;
 };
 
+class PhaseAwareTimeBudgeter final : public TimeBudgeter {
+public:
+    PhaseAwareTimeBudgeter(int expected_game_plies = 30,
+                           int min_remaining_my_turns = 3,
+                           int clock_reserve_ms = 180,
+                           int min_move_budget_ms = 35,
+                           int max_move_budget_ms = 1500,
+                           int time_buffer_ms = 25,
+                           int opening_ply_limit = 8,
+                           int endgame_ply_start = 20);
+
+    int compute_ms(int my_time_ms, int current_ply,
+                   int legal_move_count) const override;
+
+private:
+    int expected_game_plies_;
+    int min_remaining_my_turns_;
+    int clock_reserve_ms_;
+    int min_move_budget_ms_;
+    int max_move_budget_ms_;
+    int time_buffer_ms_;
+    int opening_ply_limit_;
+    int endgame_ply_start_;
+};
+
 class NegamaxAgent : public Agent {
 public:
     explicit NegamaxAgent(
@@ -105,9 +130,27 @@ private:
     std::pair<float, Move> negamax(
         State& state, int depth, float alpha, float beta, int player,
         std::chrono::steady_clock::time_point deadline, bool& timed_out,
-        int ply = 0, bool is_root = false);
+        bool& reached_depth_limit, int ply = 0, bool is_root = false);
+    bool should_try_next_depth(int remaining_ms, int last_depth_time_ms,
+                               int previous_depth_time_ms,
+                               int legal_move_count) const;
     std::pair<float, Move> iterative_deepening(State& state, int max_depth,
                                                int time_budget_ms);
+
+#ifdef NEGAMAX_LOGGING
+    struct SearchStats {
+        long long nodes = 0;
+        long long tt_probes = 0;
+        long long tt_hits = 0;
+        long long tt_cutoffs = 0;
+        long long beta_cutoffs = 0;
+        long long first_move_beta_cutoffs = 0;
+        long long beta_cutoff_index_sum = 0;
+        long long alpha_raises = 0;
+    };
+
+    std::vector<Move> principal_variation(const State& state, int depth) const;
+#endif
 
     SearchConfig config_;
     std::unique_ptr<Evaluator> evaluator_;
@@ -116,4 +159,8 @@ private:
     int my_side_;
     std::optional<State> state_;
     TranspositionTable tt_;
+#ifdef NEGAMAX_LOGGING
+    int move_number_;
+    SearchStats current_search_stats_;
+#endif
 };

@@ -9,7 +9,11 @@
 
 int main()
 {
-    std::unique_ptr<Agent> ai = std::make_unique<NegamaxAgent>();
+    std::unique_ptr<Agent> ai = std::make_unique<NegamaxAgent>(
+        SearchConfig{},
+        std::make_unique<ScoreDiffEvaluator>(),
+        std::make_unique<AreaMovePrioritizer>(),
+        std::make_unique<PhaseAwareTimeBudgeter>());
 
     char line[1024];
     char command[32];

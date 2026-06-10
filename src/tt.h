@@ -20,6 +20,7 @@ struct TranspositionEntry {
     float value;
     Move best_move;
     BoundType bound;
+    bool reached_depth_limit;
     bool occupied;
 };
 
@@ -28,7 +29,7 @@ public:
     explicit TranspositionTable(size_t capacity = TT_CAPACITY);
     const TranspositionEntry* probe(uint64_t key) const;
     void store(uint64_t key, int depth, float value, Move best_move,
-               BoundType bound);
+               BoundType bound, bool reached_depth_limit);
     size_t size() const;
     size_t capacity() const;
     void clear();

@@ -20,7 +20,7 @@ class Player:
                 self.exec,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=None,
+                stderr=subprocess.PIPE,
                 text=True,
                 shell=True
             )
@@ -29,13 +29,17 @@ class Player:
             sys.exit(1)
         self.reads = queue.Queue()
         self.writes = queue.Queue()
+        self.logs = queue.Queue()
 
         self.stdin_thread = threading.Thread(target=self.__handle_stdin)
         self.stdout_thread = threading.Thread(target=self.__handle_stdout)
+        self.stderr_thread = threading.Thread(target=self.__handle_stderr)
         self.stdin_thread.daemon = True
         self.stdout_thread.daemon = True
+        self.stderr_thread.daemon = True
         self.stdin_thread.start()
         self.stdout_thread.start()
+        self.stderr_thread.start()
 
     def __handle_stdin(self):
         while True:
@@ -51,6 +55,16 @@ class Player:
                 self.reads.put(self.process.stdout.readline())
             except:
                 pass
+
+    def __handle_stderr(self):
+        while True:
+            try:
+                line = self.process.stderr.readline()
+                if line == "":
+                    break
+                self.logs.put(line)
+            except:
+                break
 
     def print(self, message: str):
         self.writes.put(f'{message}\n')
@@ -81,6 +95,17 @@ class Player:
             thread.join()
 
         return returns
+
+
+def flush_engine_logs(players: List[Player], logger):
+    names = ["FIRST", "SECOND"]
+    for i, player in enumerate(players):
+        while True:
+            try:
+                line = player.logs.get_nowait()
+            except queue.Empty:
+                break
+            print(f'[{names[i]}] {line.rstrip()}', file=logger)
 
 
 def read_settings():
@@ -142,16 +167,19 @@ def main():
     user = [Player(settings["EXEC1"]), Player(settings["EXEC2"])]
 
     def run(user):
-        with open(settings["LOG"], "w") as logger:
+        with open(settings["LOG"], "w") as logger, \
+             open(f'{settings["LOG"]}.engine.log', "w") as engine_logger:
             user[0].print("READY FIRST")
             user[1].print("READY SECOND")
             lines = Player.readAll(user, 3.0)
+            flush_engine_logs(user, engine_logger)
             aborted = False
             for i, line in enumerate(lines):
                 if line is None or line[1] != "OK\n":
                     print(f'ABORT {i} TLE', file=logger)
                     aborted = True
             if aborted:
+                flush_engine_logs(user, engine_logger)
                 return
 
             board_str = ' '.join(''.join(map(str, row)) for row in board)
@@ -168,9 +196,11 @@ def main():
                 read = user[u].readline(timeout[u])
                 if read is None:
                     print(f'ABORT {u} TLE', file=logger)
+                    flush_engine_logs(user, engine_logger)
                     return
 
                 readTime, readStr = read
+                flush_engine_logs(user, engine_logger)
                 readTime = min(int(readTime*1000), timeout[u])
                 timeout[u] -= readTime
 
@@ -178,11 +208,13 @@ def main():
                     r1,c1,r2,c2=map(int, readStr.split())
                 except:
                     print(f'ABORT {u} Parse failed', file=logger)
+                    flush_engine_logs(user, engine_logger)
                     return
 
                 if r1 == -1 and c1 == -1 and r2 == -1 and c2 == -1:
                     user[1-u].print(f'OPP {r1} {c1} {r2} {c2} {readTime}')
                     print(f'{name} {r1} {c1} {r2} {c2} {readTime}', file=logger)
+                    flush_engine_logs(user, engine_logger)
                     if passed:
                         break
                     passed = True
@@ -190,6 +222,7 @@ def main():
                     passed = False
                     if not (0 <= r1 <= r2 <  R and 0 <= c1 <= c2 < C):
                         print(f'ABORT {u} Out of range', file=logger)
+                        flush_engine_logs(user, engine_logger)
                         return
 
                     sum = 0
@@ -199,6 +232,7 @@ def main():
                                 sum += board[i][j]
                     if sum != 10:
                         print(f'ABORT {u} Sum not equals to 10', file=logger)
+                        flush_engine_logs(user, engine_logger)
                         return
 
                     top, down, left, right = False, False, False, False
@@ -214,6 +248,7 @@ def main():
                             down = True
                     if not (left and right and top and down):
                         print(f'ABORT {u} Not fit', file=logger)
+                        flush_engine_logs(user, engine_logger)
                         return
 
                     for i in range(r1, r2+1):
@@ -222,6 +257,7 @@ def main():
 
                     user[1-u].print(f'OPP {r1} {c1} {r2} {c2} {int(readTime)}')
                     print(f'{name} {r1} {c1} {r2} {c2} {readTime}', file=logger)
+                    flush_engine_logs(user, engine_logger)
 
             score = [0, 0]
             for row in board:
@@ -234,6 +270,7 @@ def main():
             print(f'FINISH', file=logger)
             print(f'SCOREFIRST {score[0]}', file=logger)
             print(f'SCORESECOND {score[1]}', file=logger)
+            flush_engine_logs(user, engine_logger)
 
     run(user)
     user[0].print("FINISH")

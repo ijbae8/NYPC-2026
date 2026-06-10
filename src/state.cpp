@@ -103,10 +103,6 @@ State State::clone() const
 
 void State::apply(Move m)
 {
-    if (!is_legal(m)) {
-        throw std::invalid_argument("Illegal move");
-    }
-
     UndoRecord record;
     record.move = m;
     record.prev_consecutive_passes = consecutive_passes_;

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
 import queue
+import csv
+import re
 import sys
 import subprocess
 import time
 import threading
-from typing import List, Tuple
+from typing import List, TextIO, Tuple
 
 
 R = 10
@@ -20,7 +22,7 @@ class Player:
                 self.exec,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=None,
+                stderr=subprocess.PIPE,
                 text=True,
                 shell=True
             )
@@ -29,13 +31,17 @@ class Player:
             sys.exit(1)
         self.reads = queue.Queue()
         self.writes = queue.Queue()
+        self.logs = queue.Queue()
 
         self.stdin_thread = threading.Thread(target=self.__handle_stdin)
         self.stdout_thread = threading.Thread(target=self.__handle_stdout)
+        self.stderr_thread = threading.Thread(target=self.__handle_stderr)
         self.stdin_thread.daemon = True
         self.stdout_thread.daemon = True
+        self.stderr_thread.daemon = True
         self.stdin_thread.start()
         self.stdout_thread.start()
+        self.stderr_thread.start()
 
     def __handle_stdin(self):
         while True:
@@ -51,6 +57,16 @@ class Player:
                 self.reads.put(self.process.stdout.readline())
             except:
                 pass
+
+    def __handle_stderr(self):
+        while True:
+            try:
+                line = self.process.stderr.readline()
+                if line == "":
+                    break
+                self.logs.put(line)
+            except:
+                break
 
     def print(self, message: str):
         self.writes.put(f'{message}\n')
@@ -83,10 +99,97 @@ class Player:
         return returns
 
 
+class EngineCsvLogger:
+    FIELDNAMES = [
+        "move",
+        "depth",
+        "score",
+        "best",
+        "nodes",
+        "assigned_ms",
+        "used_ms",
+        "depth_time_ms",
+        "nps",
+        "tt_probes",
+        "tt_hits",
+        "tt_cutoffs",
+        "beta",
+        "fm_beta",
+        "fm_beta_rate",
+        "avg_beta_idx",
+        "alpha_raises",
+        "pv_depth",
+        "pv_line",
+        "iter_depths",
+        "iter_times_ms",
+        "iter_nodes",
+        "iter_nps",
+        "raw",
+    ]
+
+    def __init__(self, file: TextIO):
+        self.writer = csv.DictWriter(file, fieldnames=self.FIELDNAMES)
+        self.writer.writeheader()
+        self.current = None
+
+    def consume(self, line: str):
+        line = line.rstrip()
+        if line.startswith("SEARCH "):
+            self.flush()
+            self.current = {"raw": line}
+            self.current.update(self.__parse_key_values(line[len("SEARCH "):]))
+            return
+
+        if self.current is None:
+            self.current = {"raw": line}
+        else:
+            self.current["raw"] = f'{self.current.get("raw", "")} | {line}'
+
+        if line.startswith("TT "):
+            values = self.__parse_key_values(line[len("TT "):])
+            self.current["tt_probes"] = values.get("probes", "")
+            self.current["tt_hits"] = values.get("hits", "")
+            self.current["tt_cutoffs"] = values.get("cutoffs", "")
+        elif line.startswith("AB "):
+            self.current.update(self.__parse_key_values(line[len("AB "):]))
+        elif line.startswith("PV "):
+            values = self.__parse_key_values(line[len("PV "):])
+            self.current["pv_depth"] = values.get("depth", "")
+            self.current["pv_line"] = values.get("line", "")
+        elif line.startswith("ITER "):
+            values = self.__parse_key_values(line[len("ITER "):])
+            self.current["iter_depths"] = values.get("depths", "")
+            self.current["iter_times_ms"] = values.get("times_ms", "")
+            self.current["iter_nodes"] = values.get("nodes", "")
+            self.current["iter_nps"] = values.get("nps", "")
+            self.flush()
+
+    def flush(self):
+        if self.current is None:
+            return
+        row = {field: self.current.get(field, "") for field in self.FIELDNAMES}
+        self.writer.writerow(row)
+        self.current = None
+
+    @staticmethod
+    def __parse_key_values(text: str):
+        return dict(re.findall(r"(\w+)=([^=]*?)(?=\s+\w+=|$)", text))
+
+
+def flush_engine_logs(players: List[Player], loggers: List[EngineCsvLogger]):
+    for i, player in enumerate(players):
+        while True:
+            try:
+                line = player.logs.get_nowait()
+            except queue.Empty:
+                break
+            loggers[i].consume(line)
+
+
 def read_settings():
     settings = {}
     try:
-        with open("./setting.ini", "r") as f:
+        with open("setting.ini", "r") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -109,7 +212,7 @@ def read_settings():
               "EXEC2=python3 main.py --test")
         sys.exit(1)
 
-    required = ["INPUT", "LOG", "EXEC1", "EXEC2"]
+    required = ["INPUT", "LOG", "LOG1", "LOG2", "EXEC1", "EXEC2"]
     for key in required:
         if key not in settings:
             print(f"Error: {key} not found in setting.ini")
@@ -142,16 +245,21 @@ def main():
     user = [Player(settings["EXEC1"]), Player(settings["EXEC2"])]
 
     def run(user):
-        with open(settings["LOG"], "w") as logger:
+        with open(settings["LOG"], "w") as logger, \
+             open(settings["LOG1"], "w", newline="") as log1, \
+             open(settings["LOG2"], "w", newline="") as log2:
+            engine_loggers = [EngineCsvLogger(log1), EngineCsvLogger(log2)]
             user[0].print("READY FIRST")
             user[1].print("READY SECOND")
             lines = Player.readAll(user, 3.0)
+            flush_engine_logs(user, engine_loggers)
             aborted = False
             for i, line in enumerate(lines):
                 if line is None or line[1] != "OK\n":
                     print(f'ABORT {i} TLE', file=logger)
                     aborted = True
             if aborted:
+                flush_engine_logs(user, engine_loggers)
                 return
 
             board_str = ' '.join(''.join(map(str, row)) for row in board)
@@ -168,9 +276,11 @@ def main():
                 read = user[u].readline(timeout[u])
                 if read is None:
                     print(f'ABORT {u} TLE', file=logger)
+                    flush_engine_logs(user, engine_loggers)
                     return
 
                 readTime, readStr = read
+                flush_engine_logs(user, engine_loggers)
                 readTime = min(int(readTime*1000), timeout[u])
                 timeout[u] -= readTime
 
@@ -178,11 +288,13 @@ def main():
                     r1,c1,r2,c2=map(int, readStr.split())
                 except:
                     print(f'ABORT {u} Parse failed', file=logger)
+                    flush_engine_logs(user, engine_loggers)
                     return
 
                 if r1 == -1 and c1 == -1 and r2 == -1 and c2 == -1:
                     user[1-u].print(f'OPP {r1} {c1} {r2} {c2} {readTime}')
                     print(f'{name} {r1} {c1} {r2} {c2} {readTime}', file=logger)
+                    flush_engine_logs(user, engine_loggers)
                     if passed:
                         break
                     passed = True
@@ -190,6 +302,7 @@ def main():
                     passed = False
                     if not (0 <= r1 <= r2 <  R and 0 <= c1 <= c2 < C):
                         print(f'ABORT {u} Out of range', file=logger)
+                        flush_engine_logs(user, engine_loggers)
                         return
 
                     sum = 0
@@ -199,6 +312,7 @@ def main():
                                 sum += board[i][j]
                     if sum != 10:
                         print(f'ABORT {u} Sum not equals to 10', file=logger)
+                        flush_engine_logs(user, engine_loggers)
                         return
 
                     top, down, left, right = False, False, False, False
@@ -214,6 +328,7 @@ def main():
                             down = True
                     if not (left and right and top and down):
                         print(f'ABORT {u} Not fit', file=logger)
+                        flush_engine_logs(user, engine_loggers)
                         return
 
                     for i in range(r1, r2+1):
@@ -222,6 +337,7 @@ def main():
 
                     user[1-u].print(f'OPP {r1} {c1} {r2} {c2} {int(readTime)}')
                     print(f'{name} {r1} {c1} {r2} {c2} {readTime}', file=logger)
+                    flush_engine_logs(user, engine_loggers)
 
             score = [0, 0]
             for row in board:
@@ -234,6 +350,9 @@ def main():
             print(f'FINISH', file=logger)
             print(f'SCOREFIRST {score[0]}', file=logger)
             print(f'SCORESECOND {score[1]}', file=logger)
+            flush_engine_logs(user, engine_loggers)
+            for engine_logger in engine_loggers:
+                engine_logger.flush()
 
     run(user)
     user[0].print("FINISH")

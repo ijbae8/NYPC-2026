@@ -21,13 +21,14 @@ const TranspositionEntry* TranspositionTable::probe(uint64_t key) const
 }
 
 void TranspositionTable::store(uint64_t key, int depth, float value,
-                               Move best_move, BoundType bound)
+                               Move best_move, BoundType bound,
+                               bool reached_depth_limit)
 {
     TranspositionEntry& entry = entries_[index(key)];
     if (!entry.occupied) {
         ++used_;
     }
-    entry = {key, depth, value, best_move, bound, true};
+    entry = {key, depth, value, best_move, bound, reached_depth_limit, true};
 }
 
 size_t TranspositionTable::size() const
