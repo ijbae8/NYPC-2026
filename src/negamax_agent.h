@@ -18,6 +18,9 @@ struct SearchConfig {
     int rows = R;
     int cols = C;
     int max_depth = 64;
+    int quiescence_depth = 8;
+    int tactical_swing_threshold = 2;
+    int tactical_move_limit = 12;
     size_t tt_capacity = TT_CAPACITY;
 };
 
@@ -101,13 +104,24 @@ private:
     void ensure_initialized() const;
     void order_moves(const State& state, std::vector<Move>& moves,
                      std::optional<Move> tt_best_move, int depth, int ply,
-                     bool is_root) const;
+                     bool is_root, std::optional<Move> last_move) const;
+    float quiescence(State& state, float alpha, float beta, int player,
+                     std::chrono::steady_clock::time_point deadline,
+                     bool& timed_out, int remaining_depth,
+                     std::optional<Move> last_move);
     std::pair<float, Move> negamax(
         State& state, int depth, float alpha, float beta, int player,
         std::chrono::steady_clock::time_point deadline, bool& timed_out,
-        int ply = 0, bool is_root = false);
+        int ply = 0, bool is_root = false,
+        std::optional<Move> last_move = std::nullopt);
     std::pair<float, Move> iterative_deepening(State& state, int max_depth,
                                                int time_budget_ms);
+    std::vector<Move> tactical_moves(const State& state, int player,
+                                     std::optional<Move> last_move) const;
+    int move_swing(const State& state, const Move& move, int player) const;
+    uint64_t search_key(const State& state,
+                        std::optional<Move> last_move) const;
+    static bool overlaps(const Move& lhs, const Move& rhs);
 
     SearchConfig config_;
     std::unique_ptr<Evaluator> evaluator_;

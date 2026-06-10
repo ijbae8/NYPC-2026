@@ -103,8 +103,9 @@ def collect_cpp_contents(path: Path, search_roots: list[Path],
 
 
 def build_submission(entry_cpp: Path, output_path: Path) -> None:
-    source_root = entry_cpp.parent
-    search_roots = [source_root, entry_cpp.parent.parent]
+    entry_dir = entry_cpp.parent
+    source_root = entry_dir.parent if entry_dir.name == "models" else entry_dir
+    search_roots = [entry_dir, source_root]
 
     system_includes: list[str] = []
     seen_system_includes: set[str] = set()
@@ -171,7 +172,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Bundle a multi-file contest bot into a single C++ file."
     )
-    parser.add_argument("--entry", default="src/main.cpp",
+    parser.add_argument("--entry", default="src/models/negamax_noweights.cpp",
                         help="Path to the main translation unit.")
     parser.add_argument("--output", default="submission.cpp",
                         help="Path to write the bundled output.")

@@ -19,6 +19,10 @@ float AreaMovePrioritizer::priority(const State& /*state*/, const Move& move,
                                     int /*depth*/, int /*ply*/,
                                     bool /*is_root*/) const
 {
+    if (move.is_pass()) {
+        return -1.0f;
+    }
+
     const int height = move.r2 - move.r1 + 1;
     const int width = move.c2 - move.c1 + 1;
     return static_cast<float>(height * width);
@@ -121,14 +125,27 @@ void NegamaxAgent::ensure_initialized() const
 
 void NegamaxAgent::order_moves(const State& state, std::vector<Move>& moves,
                                std::optional<Move> tt_best_move, int depth,
-                               int ply, bool is_root) const
+                               int ply, bool is_root,
+                               std::optional<Move> last_move) const
 {
     std::sort(moves.begin(), moves.end(),
               [&](const Move& lhs, const Move& rhs) {
-                  return move_prioritizer_->priority(
-                             state, lhs, tt_best_move, depth, ply, is_root) >
-                         move_prioritizer_->priority(
-                             state, rhs, tt_best_move, depth, ply, is_root);
+                  auto priority = [&](const Move& move) {
+                      float value = move_prioritizer_->priority(
+                          state, move, tt_best_move, depth, ply, is_root);
+                      if (last_move.has_value() &&
+                          overlaps(move, *last_move)) {
+                          const int swing =
+                              move_swing(state, move,
+                                         state.current_player());
+                          if (swing >= config_.tactical_swing_threshold) {
+                              value += 10000.0f + 100.0f * swing;
+                          }
+                      }
+                      return value;
+                  };
+
+                  return priority(lhs) > priority(rhs);
               });
 
     if (tt_best_move.has_value()) {
@@ -139,23 +156,161 @@ void NegamaxAgent::order_moves(const State& state, std::vector<Move>& moves,
     }
 }
 
+bool NegamaxAgent::overlaps(const Move& lhs, const Move& rhs)
+{
+    if (lhs.is_pass() || rhs.is_pass()) {
+        return false;
+    }
+    return lhs.r1 <= rhs.r2 && lhs.r2 >= rhs.r1 && lhs.c1 <= rhs.c2 &&
+           lhs.c2 >= rhs.c1;
+}
+
+int NegamaxAgent::move_swing(const State& state, const Move& move,
+                             int player) const
+{
+    if (move.is_pass()) {
+        return 0;
+    }
+
+    int swing = 0;
+    for (int r = move.r1; r <= move.r2; ++r) {
+        for (int c = move.c1; c <= move.c2; ++c) {
+            const int owner = state.cell_owner(r, c);
+            if (owner == 1 - player) {
+                swing += 2;
+            } else if (owner == -1) {
+                swing += 1;
+            }
+        }
+    }
+    return swing;
+}
+
+std::vector<Move> NegamaxAgent::tactical_moves(
+    const State& state, int player, std::optional<Move> last_move) const
+{
+    std::vector<Move> moves;
+    if (!last_move.has_value() || last_move->is_pass()) {
+        return moves;
+    }
+
+    for (const Move& move : state.legal_moves()) {
+        if (move.is_pass() || !overlaps(move, *last_move)) {
+            continue;
+        }
+
+        const int swing = move_swing(state, move, player);
+        if (swing >= config_.tactical_swing_threshold) {
+            moves.push_back(move);
+        }
+    }
+
+    std::sort(moves.begin(), moves.end(), [&](const Move& lhs,
+                                              const Move& rhs) {
+        const int lhs_swing = move_swing(state, lhs, player);
+        const int rhs_swing = move_swing(state, rhs, player);
+        if (lhs_swing != rhs_swing) {
+            return lhs_swing > rhs_swing;
+        }
+        const int lhs_area = (lhs.r2 - lhs.r1 + 1) * (lhs.c2 - lhs.c1 + 1);
+        const int rhs_area = (rhs.r2 - rhs.r1 + 1) * (rhs.c2 - rhs.c1 + 1);
+        return lhs_area > rhs_area;
+    });
+
+    if (static_cast<int>(moves.size()) > config_.tactical_move_limit) {
+        moves.resize(config_.tactical_move_limit);
+    }
+
+    return moves;
+}
+
+uint64_t NegamaxAgent::search_key(const State& state,
+                                  std::optional<Move> last_move) const
+{
+    uint64_t key = state.hash();
+    if (!last_move.has_value()) {
+        return key;
+    }
+
+    const Move& move = *last_move;
+    uint64_t move_key = 0x9e3779b97f4a7c15ull;
+    move_key ^= static_cast<uint64_t>(move.r1 + 2) * 0xbf58476d1ce4e5b9ull;
+    move_key ^= static_cast<uint64_t>(move.c1 + 2) * 0x94d049bb133111ebull;
+    move_key ^= static_cast<uint64_t>(move.r2 + 2) * 0xd6e8feb86659fd93ull;
+    move_key ^= static_cast<uint64_t>(move.c2 + 2) * 0xa5a3564e27f3fb1full;
+    return key ^ move_key;
+}
+
+float NegamaxAgent::quiescence(
+    State& state, float alpha, float beta, int player,
+    std::chrono::steady_clock::time_point deadline, bool& timed_out,
+    int remaining_depth, std::optional<Move> last_move)
+{
+    if (timed_out || std::chrono::steady_clock::now() >= deadline) {
+        timed_out = true;
+        return 0.0f;
+    }
+
+    const float stand_pat = evaluator_->evaluate(state, player);
+    if (remaining_depth <= 0 || state.is_terminal()) {
+        return stand_pat;
+    }
+    if (stand_pat >= beta) {
+        return stand_pat;
+    }
+    alpha = std::max(alpha, stand_pat);
+
+    std::vector<Move> moves = tactical_moves(state, player, last_move);
+    if (moves.empty()) {
+        return stand_pat;
+    }
+
+    float best_value = stand_pat;
+    for (const Move& move : moves) {
+        state.apply(move);
+        const float child_value =
+            -quiescence(state, -beta, -alpha, 1 - player, deadline,
+                        timed_out, remaining_depth - 1, move);
+        state.undo();
+
+        if (timed_out) {
+            return 0.0f;
+        }
+        if (child_value > best_value) {
+            best_value = child_value;
+        }
+        alpha = std::max(alpha, best_value);
+        if (alpha >= beta) {
+            break;
+        }
+    }
+
+    return best_value;
+}
+
 std::pair<float, Move> NegamaxAgent::negamax(
     State& state, int depth, float alpha, float beta, int player,
     std::chrono::steady_clock::time_point deadline, bool& timed_out, int ply,
-    bool is_root)
+    bool is_root, std::optional<Move> last_move)
 {
     if (timed_out || std::chrono::steady_clock::now() >= deadline) {
         timed_out = true;
         return std::make_pair(0.0f, PASS_MOVE);
     }
 
-    if ((depth == 0) || state.is_terminal()) {
+    if (state.is_terminal()) {
         return std::make_pair(evaluator_->evaluate(state, player), PASS_MOVE);
+    }
+    if (depth == 0) {
+        return std::make_pair(
+            quiescence(state, alpha, beta, player, deadline, timed_out,
+                       config_.quiescence_depth, last_move),
+            PASS_MOVE);
     }
 
     const float original_alpha = alpha;
     const float original_beta = beta;
-    const uint64_t key = state.hash();
+    const uint64_t key = search_key(state, last_move);
     const TranspositionEntry* tt_entry = tt_.probe(key);
     if (tt_entry != nullptr && tt_entry->depth >= depth) {
         if (tt_entry->bound == BoundType::Exact) {
@@ -175,7 +330,7 @@ std::pair<float, Move> NegamaxAgent::negamax(
     order_moves(state, moves,
                 tt_entry != nullptr ? std::optional<Move>(tt_entry->best_move)
                                     : std::nullopt,
-                depth, ply, is_root);
+                depth, ply, is_root, last_move);
 
     float value = -INF;
     Move best_move = PASS_MOVE;
@@ -183,7 +338,7 @@ std::pair<float, Move> NegamaxAgent::negamax(
         state.apply(move);
         float child_value = -negamax(state, depth - 1, -beta, -alpha,
                                      1 - player, deadline, timed_out, ply + 1,
-                                     false)
+                                     false, move)
                                  .first;
         state.undo();
         if (timed_out) {
@@ -221,7 +376,7 @@ std::pair<float, Move> NegamaxAgent::iterative_deepening(State& state,
     for (int depth = 1; depth <= max_depth; ++depth) {
         bool timed_out = false;
         auto result = negamax(state, depth, -INF, INF, state.current_player(),
-                              deadline, timed_out, 0, true);
+                              deadline, timed_out, 0, true, std::nullopt);
         if (timed_out) {
             break;
         }

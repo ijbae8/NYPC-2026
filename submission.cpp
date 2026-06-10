@@ -6,7 +6,6 @@
 #include <memory>
 #include <vector>
 #include <chrono>
-#include <functional>
 #include <optional>
 #include <utility>
 #include <cstdint>
@@ -16,13 +15,13 @@
 #include <stdexcept>
 #include <sstream>
 
-// begin C:/Users/cttg8/Desktop/NYPC 2026/src/negamax_agent.h
+// begin C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/negamax_agent.h
 
 
-// begin C:/Users/cttg8/Desktop/NYPC 2026/src/agent.h
+// begin C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/agent.h
 
 
-// begin C:/Users/cttg8/Desktop/NYPC 2026/src/state.h
+// begin C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/state.h
 
 
 struct Move {
@@ -77,6 +76,7 @@ private:
         };
 
         std::vector<CellDelta> deltas;
+        std::vector<Move> prev_legal_moves;
     };
 
     int rows_;
@@ -86,6 +86,7 @@ private:
     int current_player_;
     int consecutive_passes_;
     uint64_t zobrist_key_;
+    std::vector<Move> legal_moves_;
 
     std::vector<UndoRecord> undo_stack_;
 
@@ -96,10 +97,13 @@ private:
     static uint64_t zobrist_dimensions(int rows, int cols);
 
     bool border_ok(int r1, int c1, int r2, int c2) const;
+    bool intersects(const Move& lhs, const Move& rhs) const;
+    std::vector<Move> generate_legal_moves_intersecting(int r1, int c1, int r2,
+                                                        int c2) const;
     int idx(int r, int c) const;
     uint64_t compute_zobrist_key() const;
 };
-// end C:/Users/cttg8/Desktop/NYPC 2026/src/state.h
+// end C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/state.h
 
 
 class Agent {
@@ -110,9 +114,9 @@ public:
     virtual Move choose_move(int my_time_ms, int opp_time_ms) = 0;
     virtual void apply_opponent_move(Move move) = 0;
 };
-// end C:/Users/cttg8/Desktop/NYPC 2026/src/agent.h
+// end C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/agent.h
 
-// begin C:/Users/cttg8/Desktop/NYPC 2026/src/tt.h
+// begin C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/tt.h
 
 
 
@@ -127,7 +131,7 @@ enum class BoundType {
 struct TranspositionEntry {
     uint64_t key;
     int depth;
-    int value;
+    float value;
     Move best_move;
     BoundType bound;
     bool occupied;
@@ -137,7 +141,7 @@ class TranspositionTable {
 public:
     explicit TranspositionTable(size_t capacity = TT_CAPACITY);
     const TranspositionEntry* probe(uint64_t key) const;
-    void store(uint64_t key, int depth, int value, Move best_move,
+    void store(uint64_t key, int depth, float value, Move best_move,
                BoundType bound);
     size_t size() const;
     size_t capacity() const;
@@ -149,56 +153,94 @@ private:
 
     size_t index(uint64_t key) const;
 };
-// end C:/Users/cttg8/Desktop/NYPC 2026/src/tt.h
+// end C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/tt.h
 
 
 #define R 10
 #define C 17
 
-constexpr int INF = 1000000;
+constexpr float INF = 1000000.0f;
 
 struct SearchConfig {
     int rows = R;
     int cols = C;
     int max_depth = 64;
+    int quiescence_depth = 8;
+    int tactical_swing_threshold = 2;
+    int tactical_move_limit = 12;
     size_t tt_capacity = TT_CAPACITY;
 };
 
-struct TimeBudgetParams {
-    int expected_game_plies = 38;
-    int min_remaining_plies = 6;
-    int clock_reserve_ms = 150;
-    int min_move_budget_ms = 40;
-    int max_move_budget_ms = 700;
-    int time_buffer_ms = 20;
-    int heavy_branch_threshold = 60;
-    int medium_branch_threshold = 30;
-    int light_branch_threshold = 8;
+class Evaluator {
+public:
+    virtual ~Evaluator() = default;
+    virtual float evaluate(const State& state, int player) const = 0;
 };
 
-using EvaluateStateFn = std::function<int(const State&, int)>;
-using MovePriorityFn = std::function<float(
-    const State&, const Move&, std::optional<Move>, int, int, bool)>;
-using ComputeTimeBudgetFn =
-    std::function<int(int, int, int, const TimeBudgetParams&)>;
+class MovePrioritizer {
+public:
+    virtual ~MovePrioritizer() = default;
+    virtual float priority(const State& state, const Move& move,
+                           std::optional<Move> tt_best_move, int depth,
+                           int ply, bool is_root) const = 0;
+};
 
-int evaluate_state(const State& state, int player);
-float move_priority(const State& state, const Move& move,
-                    std::optional<Move> tt_best_move, int depth, int ply,
-                    bool is_root);
-int compute_time_budget_ms(int my_time_ms, int current_ply,
-                           int legal_move_count,
-                           const TimeBudgetParams& params);
+class TimeBudgeter {
+public:
+    virtual ~TimeBudgeter() = default;
+    virtual int compute_ms(int my_time_ms, int current_ply,
+                           int legal_move_count) const = 0;
+};
+
+class ScoreDiffEvaluator final : public Evaluator {
+public:
+    float evaluate(const State& state, int player) const override;
+};
+
+class AreaMovePrioritizer final : public MovePrioritizer {
+public:
+    float priority(const State& state, const Move& move,
+                   std::optional<Move> tt_best_move, int depth, int ply,
+                   bool is_root) const override;
+};
+
+class AdaptiveTimeBudgeter final : public TimeBudgeter {
+public:
+    AdaptiveTimeBudgeter(int expected_game_plies = 38,
+                         int min_remaining_plies = 6,
+                         int clock_reserve_ms = 150,
+                         int min_move_budget_ms = 40,
+                         int max_move_budget_ms = 700,
+                         int time_buffer_ms = 20,
+                         int heavy_branch_threshold = 60,
+                         int medium_branch_threshold = 30,
+                         int light_branch_threshold = 8);
+
+    int compute_ms(int my_time_ms, int current_ply,
+                   int legal_move_count) const override;
+
+private:
+    int expected_game_plies_;
+    int min_remaining_plies_;
+    int clock_reserve_ms_;
+    int min_move_budget_ms_;
+    int max_move_budget_ms_;
+    int time_buffer_ms_;
+    int heavy_branch_threshold_;
+    int medium_branch_threshold_;
+    int light_branch_threshold_;
+};
 
 class NegamaxAgent : public Agent {
 public:
     explicit NegamaxAgent(
         SearchConfig config = {},
-        TimeBudgetParams time_budget_params = {},
-        EvaluateStateFn evaluate_state_fn = evaluate_state,
-        MovePriorityFn move_priority_fn = move_priority,
-        ComputeTimeBudgetFn compute_time_budget_ms_fn =
-            compute_time_budget_ms);
+        std::unique_ptr<Evaluator> evaluator =
+            std::make_unique<ScoreDiffEvaluator>(),
+        std::unique_ptr<MovePrioritizer> move_prioritizer =
+            std::make_unique<AreaMovePrioritizer>(),
+        std::unique_ptr<TimeBudgeter> time_budgeter =
+            std::make_unique<AdaptiveTimeBudgeter>());
 
     void set_side(bool plays_first) override;
     void initialize(const std::vector<std::vector<int>>& board) override;
@@ -209,85 +251,116 @@ private:
     void ensure_initialized() const;
     void order_moves(const State& state, std::vector<Move>& moves,
                      std::optional<Move> tt_best_move, int depth, int ply,
-                     bool is_root) const;
-    std::pair<int, Move> negamax(
-        State& state, int depth, int alpha, int beta, int player,
+                     bool is_root, std::optional<Move> last_move) const;
+    float quiescence(State& state, float alpha, float beta, int player,
+                     std::chrono::steady_clock::time_point deadline,
+                     bool& timed_out, int remaining_depth,
+                     std::optional<Move> last_move);
+    std::pair<float, Move> negamax(
+        State& state, int depth, float alpha, float beta, int player,
         std::chrono::steady_clock::time_point deadline, bool& timed_out,
-        int ply = 0, bool is_root = false);
-    std::pair<int, Move> iterative_deepening(State& state, int max_depth,
-                                             int time_budget_ms);
+        int ply = 0, bool is_root = false,
+        std::optional<Move> last_move = std::nullopt);
+    std::pair<float, Move> iterative_deepening(State& state, int max_depth,
+                                               int time_budget_ms);
+    std::vector<Move> tactical_moves(const State& state, int player,
+                                     std::optional<Move> last_move) const;
+    int move_swing(const State& state, const Move& move, int player) const;
+    uint64_t search_key(const State& state,
+                        std::optional<Move> last_move) const;
+    static bool overlaps(const Move& lhs, const Move& rhs);
 
     SearchConfig config_;
-    TimeBudgetParams time_budget_params_;
-    EvaluateStateFn evaluate_state_;
-    MovePriorityFn move_priority_;
-    ComputeTimeBudgetFn compute_time_budget_ms_;
+    std::unique_ptr<Evaluator> evaluator_;
+    std::unique_ptr<MovePrioritizer> move_prioritizer_;
+    std::unique_ptr<TimeBudgeter> time_budgeter_;
     int my_side_;
     std::optional<State> state_;
     TranspositionTable tt_;
 };
-// end C:/Users/cttg8/Desktop/NYPC 2026/src/negamax_agent.h
+// end C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/negamax_agent.h
 
-// begin C:/Users/cttg8/Desktop/NYPC 2026/src/negamax_agent.cpp
+// begin C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/negamax_agent.cpp
 
 
-int evaluate_state(const State& state, int player)
+float ScoreDiffEvaluator::evaluate(const State& state, int player) const
 {
     auto scores = state.scores();
-    int value = scores.first - scores.second;
+    float value = static_cast<float>(scores.first - scores.second);
     if (player == 1) {
         value = -value;
     }
     return value;
 }
 
-float move_priority(const State& /*state*/, const Move& move,
-                    std::optional<Move> /*tt_best_move*/, int /*depth*/,
-                    int /*ply*/, bool /*is_root*/)
+float AreaMovePrioritizer::priority(const State& /*state*/, const Move& move,
+                                    std::optional<Move> /*tt_best_move*/,
+                                    int /*depth*/, int /*ply*/,
+                                    bool /*is_root*/) const
 {
+    if (move.is_pass()) {
+        return -1.0f;
+    }
+
     const int height = move.r2 - move.r1 + 1;
     const int width = move.c2 - move.c1 + 1;
     return static_cast<float>(height * width);
 }
 
-int compute_time_budget_ms(int my_time_ms, int current_ply,
-                           int legal_move_count,
-                           const TimeBudgetParams& params)
+AdaptiveTimeBudgeter::AdaptiveTimeBudgeter(
+    int expected_game_plies, int min_remaining_plies, int clock_reserve_ms,
+    int min_move_budget_ms, int max_move_budget_ms, int time_buffer_ms,
+    int heavy_branch_threshold, int medium_branch_threshold,
+    int light_branch_threshold)
+    : expected_game_plies_(expected_game_plies),
+      min_remaining_plies_(min_remaining_plies),
+      clock_reserve_ms_(clock_reserve_ms),
+      min_move_budget_ms_(min_move_budget_ms),
+      max_move_budget_ms_(max_move_budget_ms),
+      time_buffer_ms_(time_buffer_ms),
+      heavy_branch_threshold_(heavy_branch_threshold),
+      medium_branch_threshold_(medium_branch_threshold),
+      light_branch_threshold_(light_branch_threshold)
 {
-    const int usable_time_ms =
-        std::max(1, my_time_ms - params.clock_reserve_ms);
-    const int remaining_plies =
-        std::max(params.min_remaining_plies,
-                 params.expected_game_plies - current_ply);
-    int budget = usable_time_ms / remaining_plies;
+}
 
-    if (legal_move_count > params.heavy_branch_threshold) {
+int AdaptiveTimeBudgeter::compute_ms(int my_time_ms, int current_ply,
+                                     int legal_move_count) const
+{
+    const int usable_time_ms = std::max(1, my_time_ms - clock_reserve_ms_);
+    const int remaining_plies = std::max(0, expected_game_plies_ - current_ply);
+    const int remaining_my_turns = std::max(3, (remaining_plies + 1) / 2);
+
+    int budget = usable_time_ms / remaining_my_turns;
+
+    if (legal_move_count > heavy_branch_threshold_) {
         budget = budget * 3 / 2;
-    } else if (legal_move_count > params.medium_branch_threshold) {
+    } else if (legal_move_count > medium_branch_threshold_) {
         budget = budget * 5 / 4;
-    } else if (legal_move_count < params.light_branch_threshold) {
+    } else if (legal_move_count < light_branch_threshold_) {
         budget = budget * 3 / 4;
     }
 
-    budget = std::clamp(budget, params.min_move_budget_ms,
-                        params.max_move_budget_ms);
-    return std::min(budget, std::max(1, my_time_ms - params.time_buffer_ms));
+    budget = std::clamp(budget, min_move_budget_ms_, max_move_budget_ms_);
+    return std::min(budget, std::max(1, my_time_ms - time_buffer_ms_));
 }
 
-NegamaxAgent::NegamaxAgent(SearchConfig config,
-                           TimeBudgetParams time_budget_params,
-                           EvaluateStateFn evaluate_state_fn,
-                           MovePriorityFn move_priority_fn,
-                           ComputeTimeBudgetFn compute_time_budget_ms_fn)
+NegamaxAgent::NegamaxAgent(
+    SearchConfig config, std::unique_ptr<Evaluator> evaluator,
+    std::unique_ptr<MovePrioritizer> move_prioritizer,
+    std::unique_ptr<TimeBudgeter> time_budgeter)
     : config_(config),
-      time_budget_params_(time_budget_params),
-      evaluate_state_(std::move(evaluate_state_fn)),
-      move_priority_(std::move(move_priority_fn)),
-      compute_time_budget_ms_(std::move(compute_time_budget_ms_fn)),
+      evaluator_(std::move(evaluator)),
+      move_prioritizer_(std::move(move_prioritizer)),
+      time_budgeter_(std::move(time_budgeter)),
       my_side_(0),
       state_(),
       tt_(config.tt_capacity)
 {
+    if (evaluator_ == nullptr || move_prioritizer_ == nullptr ||
+        time_budgeter_ == nullptr) {
+        throw std::invalid_argument("NegamaxAgent policies must not be null");
+    }
 }
 
 void NegamaxAgent::set_side(bool plays_first)
@@ -306,9 +379,8 @@ Move NegamaxAgent::choose_move(int my_time_ms, int /*opp_time_ms*/)
     ensure_initialized();
 
     const int legal_move_count = static_cast<int>(state_->legal_moves().size());
-    const int time_budget_ms =
-        compute_time_budget_ms_(my_time_ms, state_->undo_depth(),
-                                legal_move_count, time_budget_params_);
+    const int time_budget_ms = time_budgeter_->compute_ms(
+        my_time_ms, state_->undo_depth(), legal_move_count);
     Move best_move =
         iterative_deepening(*state_, config_.max_depth, time_budget_ms).second;
     state_->apply(best_move);
@@ -332,14 +404,27 @@ void NegamaxAgent::ensure_initialized() const
 
 void NegamaxAgent::order_moves(const State& state, std::vector<Move>& moves,
                                std::optional<Move> tt_best_move, int depth,
-                               int ply, bool is_root) const
+                               int ply, bool is_root,
+                               std::optional<Move> last_move) const
 {
     std::sort(moves.begin(), moves.end(),
               [&](const Move& lhs, const Move& rhs) {
-                  return move_priority_(state, lhs, tt_best_move, depth, ply,
-                                        is_root) >
-                         move_priority_(state, rhs, tt_best_move, depth, ply,
-                                        is_root);
+                  auto priority = [&](const Move& move) {
+                      float value = move_prioritizer_->priority(
+                          state, move, tt_best_move, depth, ply, is_root);
+                      if (last_move.has_value() &&
+                          overlaps(move, *last_move)) {
+                          const int swing =
+                              move_swing(state, move,
+                                         state.current_player());
+                          if (swing >= config_.tactical_swing_threshold) {
+                              value += 10000.0f + 100.0f * swing;
+                          }
+                      }
+                      return value;
+                  };
+
+                  return priority(lhs) > priority(rhs);
               });
 
     if (tt_best_move.has_value()) {
@@ -350,23 +435,161 @@ void NegamaxAgent::order_moves(const State& state, std::vector<Move>& moves,
     }
 }
 
-std::pair<int, Move> NegamaxAgent::negamax(
-    State& state, int depth, int alpha, int beta, int player,
-    std::chrono::steady_clock::time_point deadline, bool& timed_out, int ply,
-    bool is_root)
+bool NegamaxAgent::overlaps(const Move& lhs, const Move& rhs)
+{
+    if (lhs.is_pass() || rhs.is_pass()) {
+        return false;
+    }
+    return lhs.r1 <= rhs.r2 && lhs.r2 >= rhs.r1 && lhs.c1 <= rhs.c2 &&
+           lhs.c2 >= rhs.c1;
+}
+
+int NegamaxAgent::move_swing(const State& state, const Move& move,
+                             int player) const
+{
+    if (move.is_pass()) {
+        return 0;
+    }
+
+    int swing = 0;
+    for (int r = move.r1; r <= move.r2; ++r) {
+        for (int c = move.c1; c <= move.c2; ++c) {
+            const int owner = state.cell_owner(r, c);
+            if (owner == 1 - player) {
+                swing += 2;
+            } else if (owner == -1) {
+                swing += 1;
+            }
+        }
+    }
+    return swing;
+}
+
+std::vector<Move> NegamaxAgent::tactical_moves(
+    const State& state, int player, std::optional<Move> last_move) const
+{
+    std::vector<Move> moves;
+    if (!last_move.has_value() || last_move->is_pass()) {
+        return moves;
+    }
+
+    for (const Move& move : state.legal_moves()) {
+        if (move.is_pass() || !overlaps(move, *last_move)) {
+            continue;
+        }
+
+        const int swing = move_swing(state, move, player);
+        if (swing >= config_.tactical_swing_threshold) {
+            moves.push_back(move);
+        }
+    }
+
+    std::sort(moves.begin(), moves.end(), [&](const Move& lhs,
+                                              const Move& rhs) {
+        const int lhs_swing = move_swing(state, lhs, player);
+        const int rhs_swing = move_swing(state, rhs, player);
+        if (lhs_swing != rhs_swing) {
+            return lhs_swing > rhs_swing;
+        }
+        const int lhs_area = (lhs.r2 - lhs.r1 + 1) * (lhs.c2 - lhs.c1 + 1);
+        const int rhs_area = (rhs.r2 - rhs.r1 + 1) * (rhs.c2 - rhs.c1 + 1);
+        return lhs_area > rhs_area;
+    });
+
+    if (static_cast<int>(moves.size()) > config_.tactical_move_limit) {
+        moves.resize(config_.tactical_move_limit);
+    }
+
+    return moves;
+}
+
+uint64_t NegamaxAgent::search_key(const State& state,
+                                  std::optional<Move> last_move) const
+{
+    uint64_t key = state.hash();
+    if (!last_move.has_value()) {
+        return key;
+    }
+
+    const Move& move = *last_move;
+    uint64_t move_key = 0x9e3779b97f4a7c15ull;
+    move_key ^= static_cast<uint64_t>(move.r1 + 2) * 0xbf58476d1ce4e5b9ull;
+    move_key ^= static_cast<uint64_t>(move.c1 + 2) * 0x94d049bb133111ebull;
+    move_key ^= static_cast<uint64_t>(move.r2 + 2) * 0xd6e8feb86659fd93ull;
+    move_key ^= static_cast<uint64_t>(move.c2 + 2) * 0xa5a3564e27f3fb1full;
+    return key ^ move_key;
+}
+
+float NegamaxAgent::quiescence(
+    State& state, float alpha, float beta, int player,
+    std::chrono::steady_clock::time_point deadline, bool& timed_out,
+    int remaining_depth, std::optional<Move> last_move)
 {
     if (timed_out || std::chrono::steady_clock::now() >= deadline) {
         timed_out = true;
-        return std::make_pair(0, PASS_MOVE);
+        return 0.0f;
     }
 
-    if ((depth == 0) || state.is_terminal()) {
-        return std::make_pair(evaluate_state_(state, player), PASS_MOVE);
+    const float stand_pat = evaluator_->evaluate(state, player);
+    if (remaining_depth <= 0 || state.is_terminal()) {
+        return stand_pat;
+    }
+    if (stand_pat >= beta) {
+        return stand_pat;
+    }
+    alpha = std::max(alpha, stand_pat);
+
+    std::vector<Move> moves = tactical_moves(state, player, last_move);
+    if (moves.empty()) {
+        return stand_pat;
     }
 
-    const int original_alpha = alpha;
-    const int original_beta = beta;
-    const uint64_t key = state.hash();
+    float best_value = stand_pat;
+    for (const Move& move : moves) {
+        state.apply(move);
+        const float child_value =
+            -quiescence(state, -beta, -alpha, 1 - player, deadline,
+                        timed_out, remaining_depth - 1, move);
+        state.undo();
+
+        if (timed_out) {
+            return 0.0f;
+        }
+        if (child_value > best_value) {
+            best_value = child_value;
+        }
+        alpha = std::max(alpha, best_value);
+        if (alpha >= beta) {
+            break;
+        }
+    }
+
+    return best_value;
+}
+
+std::pair<float, Move> NegamaxAgent::negamax(
+    State& state, int depth, float alpha, float beta, int player,
+    std::chrono::steady_clock::time_point deadline, bool& timed_out, int ply,
+    bool is_root, std::optional<Move> last_move)
+{
+    if (timed_out || std::chrono::steady_clock::now() >= deadline) {
+        timed_out = true;
+        return std::make_pair(0.0f, PASS_MOVE);
+    }
+
+    if (state.is_terminal()) {
+        return std::make_pair(evaluator_->evaluate(state, player), PASS_MOVE);
+    }
+    if (depth == 0) {
+        return std::make_pair(
+            quiescence(state, alpha, beta, player, deadline, timed_out,
+                       config_.quiescence_depth, last_move),
+            PASS_MOVE);
+    }
+
+    const float original_alpha = alpha;
+    const float original_beta = beta;
+    const uint64_t key = search_key(state, last_move);
     const TranspositionEntry* tt_entry = tt_.probe(key);
     if (tt_entry != nullptr && tt_entry->depth >= depth) {
         if (tt_entry->bound == BoundType::Exact) {
@@ -386,19 +609,19 @@ std::pair<int, Move> NegamaxAgent::negamax(
     order_moves(state, moves,
                 tt_entry != nullptr ? std::optional<Move>(tt_entry->best_move)
                                     : std::nullopt,
-                depth, ply, is_root);
+                depth, ply, is_root, last_move);
 
-    int value = -INF;
+    float value = -INF;
     Move best_move = PASS_MOVE;
     for (auto move : moves) {
         state.apply(move);
-        int child_value = -negamax(state, depth - 1, -beta, -alpha,
-                                   1 - player, deadline, timed_out, ply + 1,
-                                   false)
-                               .first;
+        float child_value = -negamax(state, depth - 1, -beta, -alpha,
+                                     1 - player, deadline, timed_out, ply + 1,
+                                     false, move)
+                                 .first;
         state.undo();
         if (timed_out) {
-            return std::make_pair(0, PASS_MOVE);
+            return std::make_pair(0.0f, PASS_MOVE);
         }
         if (child_value > value) {
             value = child_value;
@@ -420,19 +643,19 @@ std::pair<int, Move> NegamaxAgent::negamax(
     return std::make_pair(value, best_move);
 }
 
-std::pair<int, Move> NegamaxAgent::iterative_deepening(State& state,
-                                                       int max_depth,
-                                                       int time_budget_ms)
+std::pair<float, Move> NegamaxAgent::iterative_deepening(State& state,
+                                                         int max_depth,
+                                                         int time_budget_ms)
 {
     const int safe_budget_ms = std::max(1, time_budget_ms);
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(safe_budget_ms);
 
-    std::pair<int, Move> best_completed = std::make_pair(-INF, PASS_MOVE);
+    std::pair<float, Move> best_completed = std::make_pair(-INF, PASS_MOVE);
     for (int depth = 1; depth <= max_depth; ++depth) {
         bool timed_out = false;
         auto result = negamax(state, depth, -INF, INF, state.current_player(),
-                              deadline, timed_out, 0, true);
+                              deadline, timed_out, 0, true, std::nullopt);
         if (timed_out) {
             break;
         }
@@ -440,9 +663,9 @@ std::pair<int, Move> NegamaxAgent::iterative_deepening(State& state,
     }
     return best_completed;
 }
-// end C:/Users/cttg8/Desktop/NYPC 2026/src/negamax_agent.cpp
+// end C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/negamax_agent.cpp
 
-// begin C:/Users/cttg8/Desktop/NYPC 2026/src/state.cpp
+// begin C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/state.cpp
 
 bool Move::is_pass() const
 {
@@ -506,6 +729,7 @@ State::State(int rows, int cols, const std::vector<std::vector<int>>& init_grid)
       current_player_(0),
       consecutive_passes_(0),
       zobrist_key_(0),
+      legal_moves_(),
       undo_stack_()
 {
     if (rows_ <= 0 || cols_ <= 0) {
@@ -529,6 +753,8 @@ State::State(int rows, int cols, const std::vector<std::vector<int>>& init_grid)
     }
     owners_.assign(grid_.size(), static_cast<int8_t>(-1));
     zobrist_key_ = compute_zobrist_key();
+    legal_moves_ = generate_legal_moves_intersecting(0, 0, rows_ - 1, cols_ - 1);
+    legal_moves_.push_back(PASS_MOVE);
 }
 
 State State::clone() const
@@ -549,6 +775,7 @@ void State::apply(Move m)
     record.prev_consecutive_passes = consecutive_passes_;
     record.prev_player = current_player_;
     record.prev_hash = zobrist_key_;
+    record.prev_legal_moves = legal_moves_;
 
     if (m.is_pass()) {
         zobrist_key_ ^= zobrist_player(current_player_);
@@ -587,6 +814,20 @@ void State::apply(Move m)
     current_player_ = 1 - current_player_;
     zobrist_key_ ^= zobrist_player(current_player_);
     zobrist_key_ ^= zobrist_passes(consecutive_passes_);
+
+    std::vector<Move> next_moves;
+    next_moves.reserve(legal_moves_.size());
+    for (const Move& old_move : legal_moves_) {
+        if (old_move.is_pass() || !intersects(old_move, m)) {
+            next_moves.push_back(old_move);
+        }
+    }
+
+    std::vector<Move> regenerated =
+        generate_legal_moves_intersecting(m.r1, m.c1, m.r2, m.c2);
+    next_moves.insert(next_moves.end(), regenerated.begin(), regenerated.end());
+    legal_moves_ = std::move(next_moves);
+
     undo_stack_.push_back(std::move(record));
 }
 
@@ -606,6 +847,7 @@ void State::undo()
     consecutive_passes_ = record.prev_consecutive_passes;
     current_player_ = record.prev_player;
     zobrist_key_ = record.prev_hash;
+    legal_moves_ = std::move(record.prev_legal_moves);
 }
 
 int State::undo_depth() const
@@ -615,15 +857,26 @@ int State::undo_depth() const
 
 std::vector<Move> State::legal_moves() const
 {
+    return legal_moves_;
+}
+
+std::vector<Move> State::generate_legal_moves_intersecting(int affected_r1,
+                                                           int affected_c1,
+                                                           int affected_r2,
+                                                           int affected_c2) const
+{
     std::vector<Move> moves;
     std::vector<int> col_sum(cols_, 0);
 
-    for (int r1 = 0; r1 < rows_; ++r1) {
+    for (int r1 = 0; r1 < rows_ && r1 <= affected_r2; ++r1) {
         std::fill(col_sum.begin(), col_sum.end(), 0);
 
         for (int r2 = r1; r2 < rows_; ++r2) {
             for (int c = 0; c < cols_; ++c) {
                 col_sum[c] += grid_[idx(r2, c)];
+            }
+            if (r2 < affected_r1) {
+                continue;
             }
 
             int c1 = 0;
@@ -638,7 +891,8 @@ std::vector<Move> State::legal_moves() const
 
                 if (sum == 10) {
                     for (int left = c1; left <= c2; ++left) {
-                        if (border_ok(r1, left, r2, c2)) {
+                        if (left <= affected_c2 && c2 >= affected_c1 &&
+                            border_ok(r1, left, r2, c2)) {
                             moves.push_back({r1, left, r2, c2});
                         }
                         if (col_sum[left] != 0) {
@@ -646,11 +900,14 @@ std::vector<Move> State::legal_moves() const
                         }
                     }
                 }
+
+                if (c1 > affected_c2) {
+                    break;
+                }
             }
         }
     }
 
-    moves.push_back(PASS_MOVE);
     return moves;
 }
 
@@ -807,6 +1064,15 @@ bool State::border_ok(int r1, int c1, int r2, int c2) const
     return top && bottom && left && right;
 }
 
+bool State::intersects(const Move& lhs, const Move& rhs) const
+{
+    if (lhs.is_pass() || rhs.is_pass()) {
+        return false;
+    }
+    return lhs.r1 <= rhs.r2 && lhs.r2 >= rhs.r1 && lhs.c1 <= rhs.c2 &&
+           lhs.c2 >= rhs.c1;
+}
+
 int State::idx(int r, int c) const
 {
     return r * cols_ + c;
@@ -823,9 +1089,9 @@ uint64_t State::compute_zobrist_key() const
     key ^= zobrist_passes(consecutive_passes_);
     return key;
 }
-// end C:/Users/cttg8/Desktop/NYPC 2026/src/state.cpp
+// end C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/state.cpp
 
-// begin C:/Users/cttg8/Desktop/NYPC 2026/src/tt.cpp
+// begin C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/tt.cpp
 
 
 TranspositionTable::TranspositionTable(size_t capacity)
@@ -845,7 +1111,7 @@ const TranspositionEntry* TranspositionTable::probe(uint64_t key) const
     return nullptr;
 }
 
-void TranspositionTable::store(uint64_t key, int depth, int value,
+void TranspositionTable::store(uint64_t key, int depth, float value,
                                Move best_move, BoundType bound)
 {
     TranspositionEntry& entry = entries_[index(key)];
@@ -875,9 +1141,9 @@ size_t TranspositionTable::index(uint64_t key) const
 {
     return static_cast<size_t>(key % entries_.size());
 }
-// end C:/Users/cttg8/Desktop/NYPC 2026/src/tt.cpp
+// end C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/tt.cpp
 
-// begin C:/Users/cttg8/Desktop/NYPC 2026/src/main.cpp
+// begin C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/models/negamax_noweights.cpp
 
 
 
@@ -951,4 +1217,4 @@ int main()
 
     return 0;
 }
-// end C:/Users/cttg8/Desktop/NYPC 2026/src/main.cpp
+// end C:/Users/user/Documents/Codex/2026-06-10/github/work/NYPC-2026/src/models/negamax_noweights.cpp
